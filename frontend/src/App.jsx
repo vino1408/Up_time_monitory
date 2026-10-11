@@ -1,88 +1,305 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
+
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+
 import "./App.css";
 
-const API_BASE_URL = "http://localhost:8080/api/monitors";
+const API_BASE_URL =
+  "http://localhost:8080/api/monitors";
 
 function App() {
+
+  // =====================================================
+  // DASHBOARD STATE
+  // =====================================================
+
   const [monitors, setMonitors] = useState([]);
+
   const [stats, setStats] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [darkMode, setDarkMode] = useState(false);
+
+  const [checkHistory, setCheckHistory] =
+    useState({});
+
+  const [alerts, setAlerts] =
+    useState({});
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState("");
+
+  const [darkMode, setDarkMode] =
+    useState(false);
+
+  const [refreshing, setRefreshing] =
+    useState(false);
 
   // =====================================================
   // ADD / EDIT MODAL
   // =====================================================
 
-  const [showMonitorModal, setShowMonitorModal] = useState(false);
-  const [editingMonitorId, setEditingMonitorId] = useState(null);
+  const [showMonitorModal, setShowMonitorModal] =
+    useState(false);
 
-  const [monitorForm, setMonitorForm] = useState({
-    name: "",
-    url: "",
-    method: "GET",
-    intervalSeconds: 60,
-    timeoutSeconds: 5,
-    expectedStatus: 200,
-    active: true,
-  });
+  const [editingMonitorId, setEditingMonitorId] =
+    useState(null);
 
-  const [savingMonitor, setSavingMonitor] = useState(false);
-  const [monitorFormError, setMonitorFormError] = useState("");
+  const [monitorForm, setMonitorForm] =
+    useState({
+      name: "",
+      url: "",
+      method: "GET",
+      intervalSeconds: 60,
+      timeoutSeconds: 5,
+      expectedStatus: 200,
+      active: true,
+    });
+
+  const [savingMonitor, setSavingMonitor] =
+    useState(false);
+
+  const [monitorFormError, setMonitorFormError] =
+    useState("");
 
   // =====================================================
-  // LOAD DASHBOARD
+  // INITIAL LOAD
   // =====================================================
 
   useEffect(() => {
     fetchDashboard();
   }, []);
 
-  const fetchDashboard = async () => {
+  // =====================================================
+  // AUTO REFRESH
+  // =====================================================
+
+  useEffect(() => {
+
+    const interval =
+      setInterval(() => {
+
+        fetchDashboard(true);
+
+      }, 10000);
+
+    return () => {
+      clearInterval(interval);
+    };
+
+  }, []);
+
+  // =====================================================
+  // FETCH DASHBOARD
+  // =====================================================
+
+  const fetchDashboard = async (
+    backgroundRefresh = false
+  ) => {
+
     try {
+
+      if (!backgroundRefresh) {
+        setLoading(true);
+      }
+
       setError("");
 
-      const monitorResponse = await axios.get(API_BASE_URL);
+      if (backgroundRefresh) {
+        setRefreshing(true);
+      }
 
-      const monitorList = monitorResponse.data;
+      // =================================================
+      // GET MONITORS
+      // =================================================
+        const monitorResponse = await axios.get(
+  `${API_BASE_URL}?page=0&size=100`
+);
 
-      setMonitors(monitorList);
+const monitorData = monitorResponse.data;
 
-      const statsResults = await Promise.all(
-        monitorList.map(async (monitor) => {
-          try {
-            const response = await axios.get(
-              `${API_BASE_URL}/${monitor.id}/stats`
-            );
+const monitorList = Array.isArray(monitorData)
+  ? monitorData
+  : Array.isArray(monitorData?.content)
+    ? monitorData.content
+    : [];
 
-            return {
-              id: monitor.id,
-              data: response.data,
-            };
-          } catch (err) {
-            console.error(
-              `Failed to get stats for monitor ${monitor.id}`,
-              err
-            );
+setMonitors(monitorList);
+      // =================================================
+      // GET STATISTICS
+      // =================================================
 
-            return {
-              id: monitor.id,
-              data: null,
-            };
-          }
-        })
-      );
+      const statsResults =
+        await Promise.all(
+
+          monitorList.map(
+            async (monitor) => {
+
+              try {
+
+                const response =
+                  await axios.get(
+                    `${API_BASE_URL}/${monitor.id}/stats`
+                  );
+
+                return {
+                  id: monitor.id,
+                  data: response.data,
+                };
+
+              } catch (err) {
+
+                console.error(
+                  `Failed to get stats for monitor ${monitor.id}`,
+                  err
+                );
+
+                return {
+                  id: monitor.id,
+                  data: null,
+                };
+              }
+            }
+          )
+        );
 
       const statsMap = {};
 
-      statsResults.forEach((result) => {
-        statsMap[result.id] = result.data;
-      });
+      statsResults.forEach(
+        (result) => {
+
+          statsMap[result.id] =
+            result.data;
+
+        }
+      );
 
       setStats(statsMap);
+
+      // =================================================
+      // GET CHECK HISTORY
+      // =================================================
+
+      const historyResults =
+        await Promise.all(
+
+          monitorList.map(
+            async (monitor) => {
+
+              try {
+
+                const response =
+                  await axios.get(
+                    `${API_BASE_URL}/${monitor.id}/checks`
+                  );
+
+                return {
+                   id: monitor.id,
+  data: Array.isArray(response.data)
+    ? response.data
+    : Array.isArray(response.data?.content)
+      ? response.data.content
+      : [],
+                };
+
+              } catch (err) {
+
+                console.error(
+                  `Failed to get history for monitor ${monitor.id}`,
+                  err
+                );
+
+                return {
+                  id: monitor.id,
+                  data: [],
+                };
+              }
+            }
+          )
+        );
+
+      const historyMap = {};
+
+      historyResults.forEach(
+        (result) => {
+
+          historyMap[result.id] =
+            result.data;
+
+        }
+      );
+
+      setCheckHistory(historyMap);
+
+      // =================================================
+      // GET ALERTS
+      // =================================================
+
+      const alertResults =
+        await Promise.all(
+
+          monitorList.map(
+            async (monitor) => {
+
+              try {
+
+                const response =
+                  await axios.get(
+                    `${API_BASE_URL}/${monitor.id}/alerts`
+                  );
+
+                return {
+                  id: monitor.id,
+                  data: response.data,
+                };
+
+              } catch (err) {
+
+                console.error(
+                  `Failed to get alerts for monitor ${monitor.id}`,
+                  err
+                );
+
+                return {
+                  id: monitor.id,
+                  data: [],
+                };
+              }
+            }
+          )
+        );
+
+      const alertsMap = {};
+
+      alertResults.forEach(
+        (result) => {
+
+          alertsMap[result.id] =
+            result.data;
+
+        }
+      );
+
+      setAlerts(alertsMap);
+
+      // =================================================
+      // FINISH LOADING
+      // =================================================
+
       setLoading(false);
+      setRefreshing(false);
+
     } catch (err) {
+
       console.error(err);
 
       setError(
@@ -90,6 +307,7 @@ function App() {
       );
 
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -97,8 +315,12 @@ function App() {
   // MONITOR STATUS
   // =====================================================
 
-  const getMonitorStatus = (monitor) => {
-    const monitorStats = stats[monitor.id];
+  const getMonitorStatus = (
+    monitor
+  ) => {
+
+    const monitorStats =
+      stats[monitor.id];
 
     if (!monitorStats) {
       return "NO_DATA";
@@ -111,210 +333,332 @@ function App() {
   // SUMMARY
   // =====================================================
 
-  const activeCount = monitors.filter(
-    (monitor) => monitor.active
-  ).length;
+  const activeCount =
+    monitors.filter(
+      (monitor) =>
+        monitor.active
+    ).length;
 
-  const inactiveCount = monitors.filter(
-    (monitor) => !monitor.active
-  ).length;
+  const inactiveCount =
+    monitors.filter(
+      (monitor) =>
+        !monitor.active
+    ).length;
 
-  const upCount = monitors.filter(
-    (monitor) =>
-      stats[monitor.id]?.status === "UP"
-  ).length;
+  const upCount =
+    monitors.filter(
+      (monitor) =>
+        stats[monitor.id]?.status === "UP"
+    ).length;
 
-  const downCount = monitors.filter(
-    (monitor) =>
-      stats[monitor.id]?.status === "DOWN"
-  ).length;
+  const downCount =
+    monitors.filter(
+      (monitor) =>
+        stats[monitor.id]?.status === "DOWN"
+    ).length;
 
   // =====================================================
   // FORM CHANGE
   // =====================================================
 
-  const handleMonitorChange = (event) => {
-    const { name, value, type, checked } = event.target;
+  const handleMonitorChange =
+    (event) => {
 
-    setMonitorForm((previous) => ({
-      ...previous,
-      [name]:
-        type === "checkbox"
-          ? checked
-          : value,
-    }));
-  };
+      const {
+        name,
+        value,
+        type,
+        checked,
+      } = event.target;
 
-  // =====================================================
-  // OPEN ADD MODAL
-  // =====================================================
+      setMonitorForm(
+        (previous) => ({
+          ...previous,
 
-  const openAddMonitor = () => {
-    setEditingMonitorId(null);
-
-    setMonitorForm({
-      name: "",
-      url: "",
-      method: "GET",
-      intervalSeconds: 60,
-      timeoutSeconds: 5,
-      expectedStatus: 200,
-      active: true,
-    });
-
-    setMonitorFormError("");
-    setShowMonitorModal(true);
-  };
+          [name]:
+            type === "checkbox"
+              ? checked
+              : value,
+        })
+      );
+    };
 
   // =====================================================
-  // OPEN EDIT MODAL
+  // OPEN ADD MONITOR
   // =====================================================
 
-  const openEditMonitor = (monitor) => {
-    setEditingMonitorId(monitor.id);
+  const openAddMonitor =
+    () => {
 
-    setMonitorForm({
-      name: monitor.name || "",
-      url: monitor.url || "",
-      method: monitor.method || "GET",
-      intervalSeconds: monitor.intervalSeconds ?? 60,
-      timeoutSeconds: monitor.timeoutSeconds ?? 5,
-      expectedStatus: monitor.expectedStatus ?? 200,
-      active: monitor.active ?? true,
-    });
+      setEditingMonitorId(null);
 
-    setMonitorFormError("");
-    setShowMonitorModal(true);
-  };
+      setMonitorForm({
+        name: "",
+        url: "",
+        method: "GET",
+        intervalSeconds: 60,
+        timeoutSeconds: 5,
+        expectedStatus: 200,
+        active: true,
+      });
+
+      setMonitorFormError("");
+
+      setShowMonitorModal(true);
+    };
+
+  // =====================================================
+  // OPEN EDIT MONITOR
+  // =====================================================
+
+  const openEditMonitor =
+    (monitor) => {
+
+      setEditingMonitorId(
+        monitor.id
+      );
+
+      setMonitorForm({
+
+        name:
+          monitor.name || "",
+
+        url:
+          monitor.url || "",
+
+        method:
+          monitor.method || "GET",
+
+        intervalSeconds:
+          monitor.intervalSeconds ?? 60,
+
+        timeoutSeconds:
+          monitor.timeoutSeconds ?? 5,
+
+        expectedStatus:
+          monitor.expectedStatus ?? 200,
+
+        active:
+          monitor.active ?? true,
+      });
+
+      setMonitorFormError("");
+
+      setShowMonitorModal(true);
+    };
 
   // =====================================================
   // CLOSE MODAL
   // =====================================================
 
-  const closeMonitorModal = () => {
-    if (savingMonitor) {
-      return;
-    }
+  const closeMonitorModal =
+    () => {
 
-    setShowMonitorModal(false);
-    setEditingMonitorId(null);
-    setMonitorFormError("");
-  };
+      if (savingMonitor) {
+        return;
+      }
+
+      setShowMonitorModal(false);
+
+      setEditingMonitorId(null);
+
+      setMonitorFormError("");
+    };
 
   // =====================================================
   // SAVE MONITOR
   // =====================================================
 
-  const handleSaveMonitor = async (event) => {
-    event.preventDefault();
+  const handleSaveMonitor =
+    async (event) => {
 
-    try {
-      setSavingMonitor(true);
-      setMonitorFormError("");
+      event.preventDefault();
 
-      const monitorData = {
-        name: monitorForm.name.trim(),
-        url: monitorForm.url.trim(),
-        method: monitorForm.method,
-        intervalSeconds: Number(
-          monitorForm.intervalSeconds
-        ),
-        timeoutSeconds: Number(
-          monitorForm.timeoutSeconds
-        ),
-        expectedStatus: Number(
-          monitorForm.expectedStatus
-        ),
-        active: monitorForm.active,
-      };
+      try {
 
-      // =================================================
-      // EDIT EXISTING MONITOR
-      // =================================================
+        setSavingMonitor(true);
 
-      if (editingMonitorId !== null) {
-        await axios.put(
-          `${API_BASE_URL}/${editingMonitorId}`,
-          monitorData
-        );
-      }
+        setMonitorFormError("");
 
-      // =================================================
-      // CREATE NEW MONITOR
-      // =================================================
+        const monitorData = {
 
-      else {
-        await axios.post(
-          API_BASE_URL,
-          monitorData
-        );
-      }
+          name:
+            monitorForm.name.trim(),
 
-      // Close modal
-      setShowMonitorModal(false);
+          url:
+            monitorForm.url.trim(),
 
-      setEditingMonitorId(null);
+          method:
+            monitorForm.method,
 
-      // Refresh dashboard
-      await fetchDashboard();
+          intervalSeconds:
+            Number(
+              monitorForm.intervalSeconds
+            ),
 
-    } catch (err) {
-      console.error(err);
+          timeoutSeconds:
+            Number(
+              monitorForm.timeoutSeconds
+            ),
 
-      if (err.response?.data?.message) {
-        setMonitorFormError(
-          err.response.data.message
-        );
-      } else {
-        setMonitorFormError(
+          expectedStatus:
+            Number(
+              monitorForm.expectedStatus
+            ),
+
+          active:
+            monitorForm.active,
+        };
+
+        // =================================================
+        // EDIT
+        // =================================================
+
+        if (
           editingMonitorId !== null
-            ? "Failed to update monitor. Make sure the Spring Boot backend is running."
-            : "Failed to add monitor. Make sure the Spring Boot backend is running."
-        );
+        ) {
+
+          await axios.put(
+
+            `${API_BASE_URL}/${editingMonitorId}`,
+
+            monitorData
+
+          );
+
+        }
+
+        // =================================================
+        // CREATE
+        // =================================================
+
+        else {
+
+          await axios.post(
+
+            API_BASE_URL,
+
+            monitorData
+
+          );
+        }
+
+        setShowMonitorModal(false);
+
+        setEditingMonitorId(null);
+
+        await fetchDashboard();
+
+      } catch (err) {
+
+        console.error(err);
+
+        if (
+          err.response?.data?.message
+        ) {
+
+          setMonitorFormError(
+            err.response.data.message
+          );
+
+        } else {
+
+          setMonitorFormError(
+
+            editingMonitorId !== null
+
+              ? "Failed to update monitor. Make sure the Spring Boot backend is running."
+
+              : "Failed to add monitor. Make sure the Spring Boot backend is running."
+
+          );
+        }
+
+      } finally {
+
+        setSavingMonitor(false);
       }
-    } finally {
-      setSavingMonitor(false);
-    }
-  };
+    };
 
   // =====================================================
   // DELETE MONITOR
   // =====================================================
 
-  const handleDeleteMonitor = async (monitor) => {
-    const confirmed = window.confirm(
-      `Are you sure you want to delete "${monitor.name}"?`
-    );
+  const handleDeleteMonitor =
+    async (monitor) => {
 
-    if (!confirmed) {
-      return;
-    }
+      const confirmed =
+        window.confirm(
+          `Are you sure you want to delete "${monitor.name}"?`
+        );
 
-    try {
-      await axios.delete(
-        `${API_BASE_URL}/${monitor.id}`
-      );
+      if (!confirmed) {
+        return;
+      }
 
-      await fetchDashboard();
+      try {
 
-    } catch (err) {
-      console.error(err);
+        await axios.delete(
+          `${API_BASE_URL}/${monitor.id}`
+        );
 
-      alert(
-        "Failed to delete monitor."
-      );
-    }
-  };
+        await fetchDashboard();
+
+      } catch (err) {
+
+        console.error(err);
+
+        alert(
+          "Failed to delete monitor."
+        );
+      }
+    };
 
   // =====================================================
-  // LOADING
+  // PREPARE CHART DATA
+  // =====================================================
+
+  const getChartData =
+    (monitorId) => {
+
+      const history =
+        checkHistory[monitorId] || [];
+
+      return history
+
+        .slice(0, 20)
+
+        .reverse()
+
+        .map(
+          (check) => ({
+
+            time:
+              new Date(
+                check.checkedAt
+              ).toLocaleTimeString(),
+
+            responseTime:
+              check.responseTimeMs ?? 0,
+
+            success:
+              check.success,
+          })
+        );
+    };
+
+  // =====================================================
+  // LOADING SCREEN
   // =====================================================
 
   if (loading) {
+
     return (
+
       <div className="loading-screen">
 
-        <div className="loading-spinner"></div>
+        <div className="loading-spinner">
+        </div>
 
         <h2>
           Loading monitors...
@@ -325,11 +669,13 @@ function App() {
   }
 
   // =====================================================
-  // ERROR
+  // ERROR SCREEN
   // =====================================================
 
   if (error) {
+
     return (
+
       <div className="error-screen">
 
         <h2>
@@ -338,7 +684,9 @@ function App() {
 
         <button
           className="common-button retry-button"
-          onClick={fetchDashboard}
+          onClick={() =>
+            fetchDashboard()
+          }
         >
           Try Again
         </button>
@@ -352,6 +700,7 @@ function App() {
   // =====================================================
 
   return (
+
     <div
       className={
         darkMode
@@ -380,25 +729,34 @@ function App() {
 
         <div className="header-actions">
 
-          {/* Refresh */}
+          {/* REFRESH */}
 
           <button
             className="common-button refresh-button"
-            onClick={fetchDashboard}
+            onClick={() =>
+              fetchDashboard()
+            }
+            disabled={refreshing}
           >
-            ↻ Refresh
+
+            {refreshing
+              ? "↻ Refreshing..."
+              : "↻ Refresh"}
+
           </button>
 
-          {/* Add Monitor */}
+          {/* ADD */}
 
           <button
             className="common-button add-monitor-button"
-            onClick={openAddMonitor}
+            onClick={
+              openAddMonitor
+            }
           >
             + Add Monitor
           </button>
 
-          {/* Theme */}
+          {/* THEME */}
 
           <div className="theme-switch">
 
@@ -412,11 +770,14 @@ function App() {
                 type="checkbox"
                 checked={darkMode}
                 onChange={() =>
-                  setDarkMode(!darkMode)
+                  setDarkMode(
+                    !darkMode
+                  )
                 }
               />
 
-              <span className="slider"></span>
+              <span className="slider">
+              </span>
 
             </label>
 
@@ -437,32 +798,63 @@ function App() {
       <section className="summary">
 
         <div className="summary-card">
-          <h3>Total Monitors</h3>
-          <p>{monitors.length}</p>
+
+          <h3>
+            Total Monitors
+          </h3>
+
+          <p>
+            {monitors.length}
+          </p>
+
         </div>
 
         <div className="summary-card">
-          <h3>Active</h3>
-          <p>{activeCount}</p>
+
+          <h3>
+            Active
+          </h3>
+
+          <p>
+            {activeCount}
+          </p>
+
         </div>
 
         <div className="summary-card">
-          <h3>Inactive</h3>
-          <p>{inactiveCount}</p>
+
+          <h3>
+            Inactive
+          </h3>
+
+          <p>
+            {inactiveCount}
+          </p>
+
         </div>
 
         <div className="summary-card">
-          <h3>UP</h3>
+
+          <h3>
+            UP
+          </h3>
+
           <p className="up-number">
             {upCount}
           </p>
+
         </div>
 
         <div className="summary-card">
-          <h3>DOWN</h3>
+
+          <h3>
+            DOWN
+          </h3>
+
           <p className="down-number">
             {downCount}
           </p>
+
         </div>
 
       </section>
@@ -473,219 +865,421 @@ function App() {
 
       <section className="monitor-grid">
 
-        {monitors.map((monitor) => {
+        {monitors.map(
+          (monitor) => {
 
-          const monitorStats =
-            stats[monitor.id];
+            const monitorStats =
+              stats[monitor.id];
 
-          const status =
-            getMonitorStatus(monitor);
+            const status =
+              getMonitorStatus(
+                monitor
+              );
 
-          return (
+            const chartData =
+              getChartData(
+                monitor.id
+              );
 
-            <div
-              className="monitor-card"
-              key={monitor.id}
-            >
-
-              {/* Monitor Header */}
-
-              <div className="monitor-header">
-
-                <h2>
-                  {monitor.name}
-                </h2>
-
-                <span
-                  className={
-                    monitor.active
-                      ? "status active"
-                      : "status inactive"
-                  }
-                >
-                  {monitor.active
-                    ? "ACTIVE"
-                    : "INACTIVE"}
-                </span>
-
-              </div>
-
-              {/* UP / DOWN */}
+            return (
 
               <div
-                className={
-                  status === "UP"
-                    ? "monitor-status status-up"
-                    : status === "DOWN"
-                    ? "monitor-status status-down"
-                    : "monitor-status"
-                }
+                className="monitor-card"
+                key={monitor.id}
               >
 
-                <span className="status-dot"></span>
+                {/* MONITOR HEADER */}
 
-                <span>
-                  {status}
-                </span>
+                <div className="monitor-header">
 
-              </div>
+                  <h2>
+                    {monitor.name}
+                  </h2>
 
-              {/* Monitor Details */}
+                  <span
+                    className={
+                      monitor.active
+                        ? "status active"
+                        : "status inactive"
+                    }
+                  >
 
-              <div className="monitor-details">
+                    {monitor.active
+                      ? "ACTIVE"
+                      : "INACTIVE"}
 
-                <p>
-                  <strong>
-                    URL:
-                  </strong>{" "}
-                  {monitor.url}
-                </p>
+                  </span>
 
-                <p>
-                  <strong>
-                    Method:
-                  </strong>{" "}
-                  {monitor.method}
-                </p>
+                </div>
 
-                <p>
-                  <strong>
-                    Interval:
-                  </strong>{" "}
-                  {monitor.intervalSeconds} seconds
-                </p>
+                {/* CURRENT STATUS */}
 
-                <p>
-                  <strong>
-                    Timeout:
-                  </strong>{" "}
-                  {monitor.timeoutSeconds} seconds
-                </p>
+                <div
+                  className={
 
-                <p>
-                  <strong>
-                    Expected Status:
-                  </strong>{" "}
-                  {monitor.expectedStatus}
-                </p>
+                    status === "UP"
 
-                <p>
-                  <strong>
-                    Last Checked:
-                  </strong>{" "}
-                  {monitor.lastCheckedAt
-                    ? new Date(
-                        monitor.lastCheckedAt
-                      ).toLocaleString()
-                    : "Not checked yet"}
-                </p>
+                      ? "monitor-status status-up"
 
-                {/* Statistics */}
+                      : status === "DOWN"
 
-                {monitorStats && (
+                      ? "monitor-status status-down"
 
-                  <>
-                    <p>
-                      <strong>
-                        Uptime:
-                      </strong>{" "}
-                      {Number(
-                        monitorStats.uptimePercentage
-                      ).toFixed(2)}
-                      %
-                    </p>
+                      : "monitor-status"
 
-                    <p>
-                      <strong>
-                        Average Response:
-                      </strong>{" "}
-                      {Number(
-                        monitorStats.averageResponseTimeMs
-                      ).toFixed(2)}
-                      ms
-                    </p>
-
-                    <p>
-                      <strong>
-                        Last Response:
-                      </strong>{" "}
-                      {monitorStats.lastResponseTimeMs ??
-                        "N/A"}
-                      ms
-                    </p>
-
-                    <p>
-                      <strong>
-                        Total Checks:
-                      </strong>{" "}
-                      {monitorStats.totalChecks}
-                    </p>
-
-                    <p>
-                      <strong>
-                        Successful:
-                      </strong>{" "}
-                      {monitorStats.successfulChecks}
-                    </p>
-
-                    <p>
-                      <strong>
-                        Failed:
-                      </strong>{" "}
-                      {monitorStats.failedChecks}
-                    </p>
-
-                  </>
-
-                )}
-
-              </div>
-
-              {/* =================================================
-                  CARD ACTIONS
-              ================================================= */}
-
-              <div className="monitor-card-actions">
-
-                <button
-                  className="common-button edit-button"
-                  onClick={() =>
-                    openEditMonitor(monitor)
                   }
                 >
-                  ✎ Edit
-                </button>
+
+                  <span
+                    className="status-dot"
+                  >
+                  </span>
+
+                  <span>
+                    {status}
+                  </span>
+
+                </div>
+
+                {/* DETAILS */}
+
+                <div className="monitor-details">
+
+                  <p>
+                    <strong>
+                      URL:
+                    </strong>{" "}
+                    {monitor.url}
+                  </p>
+
+                  <p>
+                    <strong>
+                      Method:
+                    </strong>{" "}
+                    {monitor.method}
+                  </p>
+
+                  <p>
+                    <strong>
+                      Interval:
+                    </strong>{" "}
+                    {monitor.intervalSeconds}
+                    {" "}seconds
+                  </p>
+
+                  <p>
+                    <strong>
+                      Timeout:
+                    </strong>{" "}
+                    {monitor.timeoutSeconds}
+                    {" "}seconds
+                  </p>
+
+                  <p>
+                    <strong>
+                      Expected Status:
+                    </strong>{" "}
+                    {monitor.expectedStatus}
+                  </p>
+
+                  <p>
+                    <strong>
+                      Last Checked:
+                    </strong>{" "}
+
+                    {monitor.lastCheckedAt
+
+                      ? new Date(
+                          monitor.lastCheckedAt
+                        ).toLocaleString()
+
+                      : "Not checked yet"}
+
+                  </p>
+
+                  {/* STATISTICS */}
+
+                  {monitorStats && (
+
+                    <>
+
+                      <p>
+                        <strong>
+                          Uptime:
+                        </strong>{" "}
+
+                        {Number(
+                          monitorStats
+                            .uptimePercentage
+                        ).toFixed(2)}
+
+                        %
+                      </p>
+
+                      <p>
+                        <strong>
+                          Average Response:
+                        </strong>{" "}
+
+                        {Number(
+                          monitorStats
+                            .averageResponseTimeMs
+                        ).toFixed(2)}
+
+                        ms
+                      </p>
+
+                      <p>
+                        <strong>
+                          Last Response:
+                        </strong>{" "}
+
+                        {monitorStats
+                          .lastResponseTimeMs ??
+                          "N/A"}
+
+                        {" "}ms
+                      </p>
+
+                      <p>
+                        <strong>
+                          Total Checks:
+                        </strong>{" "}
+
+                        {
+                          monitorStats
+                            .totalChecks
+                        }
+
+                      </p>
+
+                      <p>
+                        <strong>
+                          Successful:
+                        </strong>{" "}
+
+                        {
+                          monitorStats
+                            .successfulChecks
+                        }
+
+                      </p>
+
+                      <p>
+                        <strong>
+                          Failed:
+                        </strong>{" "}
+
+                        {
+                          monitorStats
+                            .failedChecks
+                        }
+
+                      </p>
+
+                    </>
+
+                  )}
+
+                </div>
+
+                {/* =================================================
+                    RESPONSE TIME CHART
+                ================================================= */}
+
+                <div className="chart-section">
+
+                  <div className="chart-header">
+
+                    <h3>
+                      Response Time
+                    </h3>
+
+                    <span>
+                      Last 20 checks
+                    </span>
+
+                  </div>
+
+                  {chartData.length > 0 ? (
+
+                    <div className="chart-container">
+
+                      <ResponsiveContainer
+                        width="100%"
+                        height={220}
+                      >
+
+                        <LineChart
+                          data={chartData}
+                        >
+
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                          />
+
+                          <XAxis
+                            dataKey="time"
+                            tick={{
+                              fontSize: 11,
+                            }}
+                          />
+
+                          <YAxis
+                            tick={{
+                              fontSize: 11,
+                            }}
+                          />
+
+                          <Tooltip />
+
+                          <Line
+                            type="monotone"
+                            dataKey="responseTime"
+                            name="Response Time"
+                            stroke="#2563eb"
+                            strokeWidth={2}
+                            dot={false}
+                          />
+
+                        </LineChart>
+
+                      </ResponsiveContainer>
+
+                    </div>
+
+                  ) : (
+
+                    <div className="no-chart-data">
+
+                      No check history
+                      available.
+
+                    </div>
+
+                  )}
+
+                </div>
+                                {/* =================================================
+                    ALERT HISTORY
+                ================================================= */}
+
+                <div className="alert-section">
+
+                  <div className="alert-header">
+                    <h3>Alert History</h3>
+                    <span>
+                      {(alerts[monitor.id] || []).length} alerts
+                    </span>
+                  </div>
+
+                  {(alerts[monitor.id] || []).length > 0 ? (
+
+                    <div className="alert-list">
+
+                      {alerts[monitor.id]
+                        .slice()
+                        .reverse()
+                        .map((alert) => (
+
+                          <div
+                            className={`alert-item ${
+                              alert.status === "FIRING"
+                                ? "alert-firing"
+                                : "alert-resolved"
+                            }`}
+                            key={alert.id}
+                          >
+
+                            <div className="alert-item-header">
+
+                              <strong>
+                                {alert.status}
+                              </strong>
+
+                              <span>
+                                {new Date(
+                                  alert.createdAt
+                                ).toLocaleString()}
+                              </span>
+
+                            </div>
+
+                            <p>
+                              {alert.message}
+                            </p>
+
+                            {alert.resolvedAt && (
+                              <small>
+                                Resolved:{" "}
+                                {new Date(
+                                  alert.resolvedAt
+                                ).toLocaleString()}
+                              </small>
+                            )}
+
+                          </div>
+
+                        ))}
+
+                    </div>
+
+                  ) : (
+
+                    <div className="no-alerts">
+                      No alerts
+                    </div>
+
+                  )}
+
+                </div>
+
+                {/* =================================================
+                    ACTIONS
+                ================================================= */}
+
+                <div className="monitor-card-actions">
+
+                  <button
+                    className="common-button edit-button"
+                    onClick={() =>
+                      openEditMonitor(
+                        monitor
+                      )
+                    }
+                  >
+                    ✎ Edit
+                  </button>
+
+                  <button
+                    className="common-button delete-button"
+                    onClick={() =>
+                      handleDeleteMonitor(
+                        monitor
+                      )
+                    }
+                  >
+                    🗑 Delete
+                  </button>
+
+                </div>
 
                 <button
-                  className="common-button delete-button"
+                  className="common-button statistics-button"
                   onClick={() =>
-                    handleDeleteMonitor(monitor)
+                    window.open(
+                      `${API_BASE_URL}/${monitor.id}/stats`,
+                      "_blank"
+                    )
                   }
                 >
-                  🗑 Delete
+                  View Statistics
                 </button>
 
               </div>
-
-              {/* Statistics */}
-
-              <button
-                className="common-button statistics-button"
-                onClick={() =>
-                  window.open(
-                    `${API_BASE_URL}/${monitor.id}/stats`,
-                    "_blank"
-                  )
-                }
-              >
-                View Statistics
-              </button>
-
-            </div>
-
-          );
-
-        })}
+            );
+          }
+        )}
 
       </section>
 
@@ -697,7 +1291,9 @@ function App() {
 
         <div
           className="modal-overlay"
-          onClick={closeMonitorModal}
+          onClick={
+            closeMonitorModal
+          }
         >
 
           <div
@@ -707,44 +1303,54 @@ function App() {
             }
           >
 
-            {/* Modal Header */}
+            {/* MODAL HEADER */}
 
             <div className="modal-header">
 
               <div>
 
                 <h2>
+
                   {editingMonitorId !== null
                     ? "Edit Monitor"
                     : "Add New Monitor"}
+
                 </h2>
 
                 <p>
+
                   {editingMonitorId !== null
                     ? "Update monitor configuration."
                     : "Configure a website or API to monitor."}
+
                 </p>
 
               </div>
 
               <button
                 className="modal-close-button"
-                onClick={closeMonitorModal}
-                disabled={savingMonitor}
+                onClick={
+                  closeMonitorModal
+                }
+                disabled={
+                  savingMonitor
+                }
               >
                 ×
               </button>
 
             </div>
 
-            {/* Form */}
+            {/* FORM */}
 
             <form
-              onSubmit={handleSaveMonitor}
+              onSubmit={
+                handleSaveMonitor
+              }
               className="monitor-form"
             >
 
-              {/* Name */}
+              {/* NAME */}
 
               <div className="form-group">
 
@@ -755,8 +1361,12 @@ function App() {
                 <input
                   type="text"
                   name="name"
-                  value={monitorForm.name}
-                  onChange={handleMonitorChange}
+                  value={
+                    monitorForm.name
+                  }
+                  onChange={
+                    handleMonitorChange
+                  }
                   placeholder="Example Site"
                   required
                 />
@@ -774,15 +1384,19 @@ function App() {
                 <input
                   type="url"
                   name="url"
-                  value={monitorForm.url}
-                  onChange={handleMonitorChange}
+                  value={
+                    monitorForm.url
+                  }
+                  onChange={
+                    handleMonitorChange
+                  }
                   placeholder="https://example.com"
                   required
                 />
 
               </div>
 
-              {/* Method */}
+              {/* METHOD */}
 
               <div className="form-group">
 
@@ -792,9 +1406,14 @@ function App() {
 
                 <select
                   name="method"
-                  value={monitorForm.method}
-                  onChange={handleMonitorChange}
+                  value={
+                    monitorForm.method
+                  }
+                  onChange={
+                    handleMonitorChange
+                  }
                 >
+
                   <option value="GET">
                     GET
                   </option>
@@ -802,11 +1421,12 @@ function App() {
                   <option value="HEAD">
                     HEAD
                   </option>
+
                 </select>
 
               </div>
 
-              {/* Interval / Timeout */}
+              {/* INTERVAL / TIMEOUT */}
 
               <div className="form-row">
 
@@ -820,9 +1440,12 @@ function App() {
                     type="number"
                     name="intervalSeconds"
                     value={
-                      monitorForm.intervalSeconds
+                      monitorForm
+                        .intervalSeconds
                     }
-                    onChange={handleMonitorChange}
+                    onChange={
+                      handleMonitorChange
+                    }
                     min="1"
                     required
                   />
@@ -839,9 +1462,12 @@ function App() {
                     type="number"
                     name="timeoutSeconds"
                     value={
-                      monitorForm.timeoutSeconds
+                      monitorForm
+                        .timeoutSeconds
                     }
-                    onChange={handleMonitorChange}
+                    onChange={
+                      handleMonitorChange
+                    }
                     min="1"
                     required
                   />
@@ -850,7 +1476,7 @@ function App() {
 
               </div>
 
-              {/* Expected Status */}
+              {/* EXPECTED STATUS */}
 
               <div className="form-group">
 
@@ -862,9 +1488,12 @@ function App() {
                   type="number"
                   name="expectedStatus"
                   value={
-                    monitorForm.expectedStatus
+                    monitorForm
+                      .expectedStatus
                   }
-                  onChange={handleMonitorChange}
+                  onChange={
+                    handleMonitorChange
+                  }
                   min="100"
                   max="599"
                   required
@@ -872,7 +1501,7 @@ function App() {
 
               </div>
 
-              {/* Active */}
+              {/* ACTIVE */}
 
               <div className="active-checkbox">
 
@@ -880,8 +1509,12 @@ function App() {
                   type="checkbox"
                   id="active"
                   name="active"
-                  checked={monitorForm.active}
-                  onChange={handleMonitorChange}
+                  checked={
+                    monitorForm.active
+                  }
+                  onChange={
+                    handleMonitorChange
+                  }
                 />
 
                 <label htmlFor="active">
@@ -890,7 +1523,7 @@ function App() {
 
               </div>
 
-              {/* Error */}
+              {/* FORM ERROR */}
 
               {monitorFormError && (
 
@@ -900,15 +1533,19 @@ function App() {
 
               )}
 
-              {/* Buttons */}
+              {/* BUTTONS */}
 
               <div className="modal-actions">
 
                 <button
                   type="button"
                   className="common-button cancel-button"
-                  onClick={closeMonitorModal}
-                  disabled={savingMonitor}
+                  onClick={
+                    closeMonitorModal
+                  }
+                  disabled={
+                    savingMonitor
+                  }
                 >
                   Cancel
                 </button>
@@ -916,13 +1553,21 @@ function App() {
                 <button
                   type="submit"
                   className="common-button submit-monitor-button"
-                  disabled={savingMonitor}
+                  disabled={
+                    savingMonitor
+                  }
                 >
+
                   {savingMonitor
+
                     ? "Saving..."
+
                     : editingMonitorId !== null
+
                     ? "Save Changes"
+
                     : "Add Monitor"}
+
                 </button>
 
               </div>

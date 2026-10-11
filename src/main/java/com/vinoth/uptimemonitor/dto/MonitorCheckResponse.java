@@ -11,9 +11,11 @@ public class MonitorCheckResponse {
     private Boolean success;
     private String errorMessage;
 
+    // Default constructor
     public MonitorCheckResponse() {
     }
 
+    // Parameterized constructor
     public MonitorCheckResponse(
             Long id,
             LocalDateTime checkedAt,
@@ -30,6 +32,7 @@ public class MonitorCheckResponse {
         this.errorMessage = errorMessage;
     }
 
+    // Getters and setters
     public Long getId() {
         return id;
     }

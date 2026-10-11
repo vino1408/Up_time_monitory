@@ -2,6 +2,10 @@ package com.vinoth.uptimemonitor.controller;
 
 import java.util.List;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -12,68 +16,137 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.vinoth.uptimemonitor.dto.AlertResponse;
 import com.vinoth.uptimemonitor.dto.MonitorCheckResponse;
+import com.vinoth.uptimemonitor.dto.MonitorRequest;
 import com.vinoth.uptimemonitor.dto.MonitorStatsResponse;
+import com.vinoth.uptimemonitor.dto.PagedResponse;
 import com.vinoth.uptimemonitor.entity.Monitor;
 import com.vinoth.uptimemonitor.entity.MonitorCheck;
 import com.vinoth.uptimemonitor.repository.MonitorCheckRepository;
+import com.vinoth.uptimemonitor.repository.MonitorRepository;
+import com.vinoth.uptimemonitor.service.AlertService;
 import com.vinoth.uptimemonitor.service.MonitorService;
 import com.vinoth.uptimemonitor.service.MonitoringService;
 
+import jakarta.validation.Valid;
+
 @RestController
 @CrossOrigin(origins = "http://localhost:5173")
-
 @RequestMapping("/api/monitors")
 public class MonitorController {
 
     private final MonitorService monitorService;
     private final MonitoringService monitoringService;
     private final MonitorCheckRepository monitorCheckRepository;
+    private final MonitorRepository monitorRepository;
+    private final AlertService alertService;
 
     public MonitorController(
             MonitorService monitorService,
             MonitoringService monitoringService,
-            MonitorCheckRepository monitorCheckRepository) {
+            MonitorCheckRepository monitorCheckRepository,
+            MonitorRepository monitorRepository,
+            AlertService alertService) {
 
         this.monitorService = monitorService;
         this.monitoringService = monitoringService;
         this.monitorCheckRepository = monitorCheckRepository;
+        this.monitorRepository = monitorRepository;
+        this.alertService = alertService;
     }
 
-    // Create a new monitor
+    // CREATE MONITOR
     @PostMapping
     public ResponseEntity<Monitor> createMonitor(
-            @RequestBody Monitor monitor) {
+            @Valid @RequestBody MonitorRequest request) {
 
-        Monitor createdMonitor =
-                monitorService.createMonitor(monitor);
+        Monitor monitor = new Monitor();
+        monitor.setName(request.getName());
+        monitor.setUrl(request.getUrl());
+        monitor.setMethod(request.getMethod());
+        monitor.setIntervalSeconds(request.getIntervalSeconds());
+        monitor.setTimeoutSeconds(request.getTimeoutSeconds());
+        monitor.setExpectedStatus(request.getExpectedStatus());
+        monitor.setActive(request.getActive());
 
-        return ResponseEntity
-                .status(HttpStatus.CREATED)
+        Monitor createdMonitor = monitorService.createMonitor(monitor);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
                 .body(createdMonitor);
     }
 
-    // Get all monitors
+    // GET ALL MONITORS WITH PAGINATION
     @GetMapping
-    public ResponseEntity<List<Monitor>> getAllMonitors() {
+    public ResponseEntity<PagedResponse<Monitor>> getAllMonitors(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
 
-        return ResponseEntity.ok(
-                monitorService.getAllMonitors()
+        validatePagination(page, size);
+
+        Pageable pageable = PageRequest.of(
+                page,
+                size,
+                Sort.by("id").ascending()
         );
+
+        Page<Monitor> result = monitorRepository.findAll(pageable);
+
+        return ResponseEntity.ok(toPagedResponse(result));
     }
 
-    // Get active monitors
+    // GET ACTIVE MONITORS WITH PAGINATION
     @GetMapping("/active")
-    public ResponseEntity<List<Monitor>> getActiveMonitors() {
+    public ResponseEntity<PagedResponse<Monitor>> getActiveMonitors(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
 
-        return ResponseEntity.ok(
-                monitorService.getActiveMonitors()
+        validatePagination(page, size);
+
+        Pageable pageable = PageRequest.of(
+                page,
+                size,
+                Sort.by("id").ascending()
+        );
+
+        Page<Monitor> result =
+                monitorRepository.findByActiveTrue(pageable);
+
+        return ResponseEntity.ok(toPagedResponse(result));
+    }
+
+    // VALIDATE PAGINATION PARAMETERS
+    private void validatePagination(int page, int size) {
+        if (page < 0) {
+            throw new IllegalArgumentException(
+                    "Page must be zero or greater"
+            );
+        }
+
+        if (size < 1 || size > 100) {
+            throw new IllegalArgumentException(
+                    "Page size must be between 1 and 100"
+            );
+        }
+    }
+
+    // CONVERT PAGE TO PAGED RESPONSE
+    private <T> PagedResponse<T> toPagedResponse(Page<T> result) {
+        return new PagedResponse<>(
+                result.getContent(),
+                result.getNumber(),
+                result.getSize(),
+                result.getTotalElements(),
+                result.getTotalPages(),
+                result.isFirst(),
+                result.isLast()
         );
     }
 
-    // Get monitor by ID
+    // GET MONITOR BY ID
     @GetMapping("/{id}")
     public ResponseEntity<Monitor> getMonitorById(
             @PathVariable Long id) {
@@ -83,18 +156,27 @@ public class MonitorController {
         );
     }
 
-    // Update monitor
+    // UPDATE MONITOR
     @PutMapping("/{id}")
     public ResponseEntity<Monitor> updateMonitor(
             @PathVariable Long id,
-            @RequestBody Monitor monitor) {
+            @Valid @RequestBody MonitorRequest request) {
+
+        Monitor monitor = new Monitor();
+        monitor.setName(request.getName());
+        monitor.setUrl(request.getUrl());
+        monitor.setMethod(request.getMethod());
+        monitor.setIntervalSeconds(request.getIntervalSeconds());
+        monitor.setTimeoutSeconds(request.getTimeoutSeconds());
+        monitor.setExpectedStatus(request.getExpectedStatus());
+        monitor.setActive(request.getActive());
 
         return ResponseEntity.ok(
                 monitorService.updateMonitor(id, monitor)
         );
     }
 
-    // Delete monitor
+    // DELETE MONITOR
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteMonitor(
             @PathVariable Long id) {
@@ -104,13 +186,12 @@ public class MonitorController {
         return ResponseEntity.noContent().build();
     }
 
-    // Manually check a monitor
+    // MANUALLY CHECK MONITOR
     @PostMapping("/{id}/check")
     public ResponseEntity<MonitorCheck> checkMonitor(
             @PathVariable Long id) {
 
-        Monitor monitor =
-                monitorService.getMonitorById(id);
+        Monitor monitor = monitorService.getMonitorById(id);
 
         MonitorCheck result =
                 monitoringService.checkMonitor(monitor);
@@ -118,39 +199,103 @@ public class MonitorController {
         return ResponseEntity.ok(result);
     }
 
-    // Get monitor check history
+    // GET MONITOR CHECK HISTORY WITH PAGINATION AND FILTERING
     @GetMapping("/{id}/checks")
-    public ResponseEntity<List<MonitorCheckResponse>> getMonitorChecks(
-            @PathVariable Long id) {
+    public ResponseEntity<PagedResponse<MonitorCheckResponse>>
+            getMonitorChecks(
+                    @PathVariable Long id,
+                    @RequestParam(defaultValue = "0") int page,
+                    @RequestParam(defaultValue = "10") int size,
+                    @RequestParam(required = false) Boolean success) {
 
-        List<MonitorCheckResponse> checks =
-                monitorCheckRepository
-                        .findByMonitorIdOrderByCheckedAtDesc(id)
-                        .stream()
-                        .map(check -> new MonitorCheckResponse(
-                                check.getId(),
-                                check.getCheckedAt(),
-                                check.getStatusCode(),
-                                check.getResponseTimeMs(),
-                                check.getSuccess(),
-                                check.getErrorMessage()
-                        ))
-                        .toList();
+        validatePagination(page, size);
 
-        return ResponseEntity.ok(checks);
+        // Verify that the monitor exists
+        monitorService.getMonitorById(id);
+
+        // Fetch newest checks first
+        Pageable pageable = PageRequest.of(
+                page,
+                size,
+                Sort.by("checkedAt").descending()
+        );
+
+        Page<MonitorCheck> result;
+
+        if (success == null) {
+            // No filter: return all checks
+            result = monitorCheckRepository
+                    .findByMonitorIdOrderByCheckedAtDesc(id, pageable);
+        } else {
+            // Filter by successful or failed checks
+            result = monitorCheckRepository
+                    .findByMonitorIdAndSuccessOrderByCheckedAtDesc(
+                            id,
+                            success,
+                            pageable
+                    );
+        }
+
+        // Convert entities into response DTOs
+        Page<MonitorCheckResponse> responsePage =
+                result.map(check -> new MonitorCheckResponse(
+                        check.getId(),
+                        check.getCheckedAt(),
+                        check.getStatusCode(),
+                        check.getResponseTimeMs(),
+                        check.getSuccess(),
+                        check.getErrorMessage()
+                ));
+
+        return ResponseEntity.ok(toPagedResponse(responsePage));
     }
 
-    // Get monitor statistics
+    // GET MONITOR STATISTICS
     @GetMapping("/{id}/stats")
     public ResponseEntity<MonitorStatsResponse> getMonitorStats(
             @PathVariable Long id) {
 
-        Monitor monitor =
-                monitorService.getMonitorById(id);
+        Monitor monitor = monitorService.getMonitorById(id);
 
-        MonitorStatsResponse stats =
-                monitoringService.getMonitorStats(monitor);
+        return ResponseEntity.ok(
+                monitoringService.getMonitorStats(monitor)
+        );
+    }
 
-        return ResponseEntity.ok(stats);
+    // GET LAST 24 HOURS STATISTICS
+    @GetMapping("/{id}/stats/24h")
+    public ResponseEntity<MonitorStatsResponse>
+            getLast24HoursStats(
+                    @PathVariable Long id) {
+
+        Monitor monitor = monitorService.getMonitorById(id);
+
+        return ResponseEntity.ok(
+                monitoringService.getLast24HoursStats(monitor)
+        );
+    }
+
+    // GET MONITOR ALERTS
+    @GetMapping("/{id}/alerts")
+    public ResponseEntity<List<AlertResponse>> getMonitorAlerts(
+            @PathVariable Long id) {
+
+        monitorService.getMonitorById(id);
+
+        List<AlertResponse> alerts =
+                alertService.getMonitorAlerts(id)
+                        .stream()
+                        .map(alert -> new AlertResponse(
+                                alert.getId(),
+                                alert.getMonitor().getId(),
+                                alert.getMonitor().getName(),
+                                alert.getMessage(),
+                                alert.getStatus(),
+                                alert.getCreatedAt(),
+                                alert.getResolvedAt()
+                        ))
+                        .toList();
+
+        return ResponseEntity.ok(alerts);
     }
 }

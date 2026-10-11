@@ -52,6 +52,16 @@ public class Monitor {
     @Column(nullable = false)
     private Boolean active = true;
 
+    // V2 monitoring state
+    @Column(name = "consecutive_failures", nullable = false)
+    private Integer consecutiveFailures = 0;
+
+    @Column(name = "consecutive_successes", nullable = false)
+    private Integer consecutiveSuccesses = 0;
+
+    @Column(name = "current_status", nullable = false, length = 20)
+    private String currentStatus = "UNKNOWN";
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
