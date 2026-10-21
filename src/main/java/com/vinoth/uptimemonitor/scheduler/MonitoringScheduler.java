@@ -3,6 +3,8 @@ package com.vinoth.uptimemonitor.scheduler;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -13,115 +15,71 @@ import com.vinoth.uptimemonitor.service.MonitoringService;
 @Component
 public class MonitoringScheduler {
 
-    private final MonitorService monitorService;
+    private static final Logger logger =
+            LoggerFactory.getLogger(MonitoringScheduler.class);
 
+    private final MonitorService monitorService;
     private final MonitoringService monitoringService;
 
     public MonitoringScheduler(
             MonitorService monitorService,
             MonitoringService monitoringService) {
 
-        this.monitorService =
-                monitorService;
-
-        this.monitoringService =
-                monitoringService;
+        this.monitorService = monitorService;
+        this.monitoringService = monitoringService;
     }
 
-    // =========================================================
-    // MONITORING LOOP
-    // =========================================================
-
     /*
-     * Runs every second.
-     *
-     * The scheduler itself runs every second,
-     * but each monitor is checked only according
-     * to its intervalSeconds value.
+     * Run the scheduling loop every second.
+     * Each monitor is checked according to its interval.
      */
-    @Scheduled(fixedRate = 1000)
+    @Scheduled(fixedDelay = 1000)
     public void checkActiveMonitors() {
 
         List<Monitor> monitors =
-                monitorService
-                        .getActiveMonitors();
+                monitorService.getActiveMonitors();
 
         for (Monitor monitor : monitors) {
 
             try {
-
                 if (shouldCheckMonitor(monitor)) {
 
-                    monitoringService
-                            .checkMonitor(monitor);
+                    monitoringService.checkMonitor(monitor);
 
-                    System.out.println(
-                            "Monitor checked: "
-                                    + monitor.getName()
-                                    + " | Interval: "
-                                    + monitor.getIntervalSeconds()
-                                    + " seconds"
+                    logger.info(
+                            "Monitor checked: {} | Interval: {} seconds",
+                            monitor.getName(),
+                            monitor.getIntervalSeconds()
                     );
                 }
 
             } catch (Exception exception) {
 
-                System.err.println(
-                        "Failed to check monitor: "
-                                + monitor.getName()
-                                + " - "
-                                + exception.getMessage()
+                logger.error(
+                        "Failed to check monitor: {}",
+                        monitor.getName(),
+                        exception
                 );
             }
         }
     }
 
-    // =========================================================
-    // SHOULD CHECK MONITOR
-    // =========================================================
+    private boolean shouldCheckMonitor(Monitor monitor) {
 
-    private boolean shouldCheckMonitor(
-            Monitor monitor) {
-
-        /*
-         * New monitor:
-         *
-         * If it has never been checked,
-         * check it immediately.
-         */
-        if (monitor.getLastCheckedAt()
-                == null) {
-
+        if (monitor.getLastCheckedAt() == null) {
             return true;
         }
 
-        /*
-         * Invalid interval:
-         *
-         * Do not execute the check.
-         */
-        if (monitor.getIntervalSeconds()
-                == null
-                || monitor.getIntervalSeconds()
-                        <= 0) {
-
+        if (monitor.getIntervalSeconds() == null
+                || monitor.getIntervalSeconds() <= 0) {
             return false;
         }
 
-        /*
-         * Calculate the next check time.
-         */
         LocalDateTime nextCheck =
-                monitor.getLastCheckedAt()
-                        .plusSeconds(
-                                monitor.getIntervalSeconds()
-                        );
+                monitor.getLastCheckedAt().plusSeconds(
+                        monitor.getIntervalSeconds()
+                );
 
-        /*
-         * Check when current time has
-         * reached or passed nextCheck.
-         */
-        return !LocalDateTime.now()
-                .isBefore(nextCheck);
+        return !LocalDateTime.now().isBefore(nextCheck);
     }
 }

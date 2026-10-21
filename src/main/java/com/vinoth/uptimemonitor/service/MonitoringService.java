@@ -8,9 +8,12 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.vinoth.uptimemonitor.dto.MonitorStatsResponse;
 import com.vinoth.uptimemonitor.entity.Monitor;
@@ -21,30 +24,36 @@ import com.vinoth.uptimemonitor.repository.MonitorRepository;
 @Service
 public class MonitoringService {
 
+    private static final int FAILURE_THRESHOLD = 3;
+
     private final MonitorCheckRepository monitorCheckRepository;
-
     private final MonitorRepository monitorRepository;
-
     private final HttpClient httpClient;
-
     private final AlertService alertService;
+    private final TransactionTemplate transactionTemplate;
 
-    // =========================================================
-    // CONSTRUCTOR
-    // =========================================================
+    /*
+     * One lock per monitor ID.
+     * Checks for the same monitor cannot overlap in this application instance.
+     */
+    private final ConcurrentHashMap<Long, ReentrantLock> monitorLocks =
+            new ConcurrentHashMap<>();
 
     public MonitoringService(
             MonitorCheckRepository monitorCheckRepository,
             MonitorRepository monitorRepository,
-            AlertService alertService) {
+            AlertService alertService,
+            PlatformTransactionManager transactionManager) {
 
         this.monitorCheckRepository = monitorCheckRepository;
         this.monitorRepository = monitorRepository;
         this.alertService = alertService;
+        this.transactionTemplate =
+                new TransactionTemplate(transactionManager);
 
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
-                .followRedirects(HttpClient.Redirect.NORMAL)
+                .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
     }
 
@@ -52,236 +61,176 @@ public class MonitoringService {
     // CHECK MONITOR
     // =========================================================
 
-    @Transactional
     public MonitorCheck checkMonitor(Monitor monitor) {
+
+        if (monitor == null || monitor.getId() == null) {
+            throw new IllegalArgumentException(
+                    "A saved monitor with a valid ID is required.");
+        }
+
+        Long monitorId = monitor.getId();
+
+        ReentrantLock lock = monitorLocks.computeIfAbsent(
+                monitorId,
+                id -> new ReentrantLock());
+
+        lock.lock();
+
+        try {
+            /*
+             * The transaction completes before the lock is released.
+             * Reload the monitor so counters are not taken from a stale
+             * object supplied by the scheduler or controller.
+             */
+            MonitorCheck result = transactionTemplate.execute(
+                    transactionStatus -> performCheck(monitorId));
+
+            if (result == null) {
+                throw new IllegalStateException(
+                        "Monitor check did not produce a result.");
+            }
+
+            return result;
+
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private MonitorCheck performCheck(Long monitorId) {
+
+        Monitor monitor = monitorRepository.findById(monitorId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Monitor not found: " + monitorId));
 
         long startTime = System.nanoTime();
 
-        MonitorCheck check = new MonitorCheck();
-
-        check.setMonitor(monitor);
-
         LocalDateTime checkedAt = LocalDateTime.now();
 
+        MonitorCheck check = new MonitorCheck();
+        check.setMonitor(monitor);
         check.setCheckedAt(checkedAt);
 
-        // =====================================================
-        // DEFAULT SUCCESS VALUE
-        // =====================================================
-
-        boolean success = false;
+        boolean success;
 
         // =====================================================
         // HTTP CHECK
         // =====================================================
 
         try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(monitor.getUrl()))
+                    .timeout(Duration.ofSeconds(
+                            monitor.getTimeoutSeconds()))
+                    .method(
+                            monitor.getMethod(),
+                            HttpRequest.BodyPublishers.noBody())
+                    .build();
 
-            HttpRequest request =
-                    HttpRequest.newBuilder()
-                            .uri(
-                                    URI.create(
-                                            monitor.getUrl()
-                                    )
-                            )
-                            .timeout(
-                                    Duration.ofSeconds(
-                                            monitor.getTimeoutSeconds()
-                                    )
-                            )
-                            .method(
-                                    monitor.getMethod(),
-                                    HttpRequest.BodyPublishers.noBody()
-                            )
-                            .build();
-
-            HttpResponse<Void> response =
-                    httpClient.send(
-                            request,
-                            HttpResponse.BodyHandlers.discarding()
-                    );
-
-            // =================================================
-            // RESPONSE TIME
-            // =================================================
+            HttpResponse<Void> response = httpClient.send(
+                    request,
+                    HttpResponse.BodyHandlers.discarding());
 
             long responseTimeMs =
-                    (System.nanoTime() - startTime)
-                            / 1_000_000;
+                    (System.nanoTime() - startTime) / 1_000_000;
 
-            // =================================================
-            // STATUS CODE
-            // =================================================
+            int statusCode = response.statusCode();
 
-            int statusCode =
-                    response.statusCode();
+            success = statusCode == monitor.getExpectedStatus();
 
-            // =================================================
-            // SUCCESS CHECK
-            // =================================================
-
-            success =
-                    statusCode ==
-                            monitor.getExpectedStatus();
-
-            // =================================================
-            // SAVE STATUS CODE
-            // =================================================
-
-            check.setStatusCode(
-                    statusCode
-            );
-
-            // =================================================
-            // SAVE RESPONSE TIME
-            // =================================================
-
-            check.setResponseTimeMs(
-                    responseTimeMs
-            );
-
-            // =================================================
-            // SAVE SUCCESS
-            // =================================================
-
-            check.setSuccess(
-                    success
-            );
-
-            // =================================================
-            // ERROR MESSAGE
-            // =================================================
+            check.setStatusCode(statusCode);
+            check.setResponseTimeMs(responseTimeMs);
+            check.setSuccess(success);
 
             if (!success) {
-
                 check.setErrorMessage(
                         "Expected HTTP "
                                 + monitor.getExpectedStatus()
                                 + " but received HTTP "
-                                + statusCode
-                );
+                                + statusCode);
             }
 
         } catch (Exception exception) {
 
-            // =================================================
-            // RESPONSE TIME WHEN REQUEST FAILS
-            // =================================================
-
             long responseTimeMs =
-                    (System.nanoTime() - startTime)
-                            / 1_000_000;
-
-            check.setResponseTimeMs(
-                    responseTimeMs
-            );
-
-            // =================================================
-            // REQUEST FAILED
-            // =================================================
+                    (System.nanoTime() - startTime) / 1_000_000;
 
             success = false;
 
+            check.setResponseTimeMs(responseTimeMs);
             check.setSuccess(false);
 
-            // =================================================
-            // ERROR MESSAGE
-            // =================================================
+            String message = exception.getMessage();
 
             check.setErrorMessage(
-                    exception.getClass()
-                            .getSimpleName()
-                            + ": "
-                            + exception.getMessage()
-            );
+                    exception.getClass().getSimpleName()
+                            + (message == null || message.isBlank()
+                                    ? ""
+                                    : ": " + message));
         }
 
-        // =========================================================
+        // =====================================================
         // CONSECUTIVE SUCCESS / FAILURE TRACKING
-        // =========================================================
+        // =====================================================
+
+        int consecutiveSuccesses =
+                monitor.getConsecutiveSuccesses() == null
+                        ? 0
+                        : monitor.getConsecutiveSuccesses();
+
+        int consecutiveFailures =
+                monitor.getConsecutiveFailures() == null
+                        ? 0
+                        : monitor.getConsecutiveFailures();
 
         if (success) {
 
-            // -------------------------------------------------
-            // SUCCESS
-            // -------------------------------------------------
-
-            monitor.setConsecutiveSuccesses(
-                    monitor.getConsecutiveSuccesses() + 1
-            );
-
-            // Reset failure counter
+            monitor.setConsecutiveSuccesses(consecutiveSuccesses + 1);
             monitor.setConsecutiveFailures(0);
-
-            // Monitor is UP
             monitor.setCurrentStatus("UP");
 
         } else {
 
-            // -------------------------------------------------
-            // FAILURE
-            // -------------------------------------------------
-
-            monitor.setConsecutiveFailures(
-                    monitor.getConsecutiveFailures() + 1
-            );
-
-            // Reset success counter
+            monitor.setConsecutiveFailures(consecutiveFailures + 1);
             monitor.setConsecutiveSuccesses(0);
 
-            // Monitor is DOWN
-            monitor.setCurrentStatus("DOWN");
+            if (monitor.getConsecutiveFailures() >= FAILURE_THRESHOLD) {
+                monitor.setCurrentStatus("DOWN");
+            }
         }
 
-        // =========================================================
+        // =====================================================
         // UPDATE LAST CHECKED TIME
-        // =========================================================
+        // =====================================================
 
-        monitor.setLastCheckedAt(
-                checkedAt
-        );
+        monitor.setLastCheckedAt(checkedAt);
 
-        // =========================================================
-        // SAVE MONITOR
-        // =========================================================
+        // =====================================================
+        // SAVE MONITOR AND CHECK RESULT
+        // =====================================================
 
-        monitorRepository.save(
-                monitor
-        );
+        monitorRepository.save(monitor);
 
-        // =========================================================
-        // SAVE CHECK RESULT
-        // =========================================================
+        MonitorCheck savedCheck = monitorCheckRepository.save(check);
 
-        MonitorCheck savedCheck =
-                monitorCheckRepository.save(
-                        check
-                );
-
-        // =========================================================
+        // =====================================================
         // ALERT PROCESSING
-        // =========================================================
+        // =====================================================
 
         try {
-
-            alertService.processAlert(
-                    monitor,
-                    success
-            );
+            alertService.processAlert(monitor, success);
 
         } catch (Exception exception) {
-
+            /*
+             * Preserve the existing behavior: alert processing errors
+             * are logged without intentionally discarding the check.
+             */
             System.err.println(
                     "Alert processing failed for monitor "
                             + monitor.getId()
                             + ": "
-                            + exception.getMessage()
-            );
+                            + exception.getMessage());
         }
-
-        // =========================================================
-        // RETURN CHECK
-        // =========================================================
 
         return savedCheck;
     }
@@ -290,145 +239,59 @@ public class MonitoringService {
     // GET MONITOR STATISTICS
     // =========================================================
 
-    @Transactional(readOnly = true)
-    public MonitorStatsResponse getMonitorStats(
-            Monitor monitor) {
+    public MonitorStatsResponse getMonitorStats(Monitor monitor) {
 
-        Long monitorId =
-                monitor.getId();
-
-        // =====================================================
-        // TOTAL CHECKS
-        // =====================================================
+        Long monitorId = monitor.getId();
 
         long totalChecks =
-                monitorCheckRepository
-                        .countByMonitorId(
-                                monitorId
-                        );
-
-        // =====================================================
-        // SUCCESSFUL CHECKS
-        // =====================================================
+                monitorCheckRepository.countByMonitorId(monitorId);
 
         long successfulChecks =
                 monitorCheckRepository
-                        .countByMonitorIdAndSuccessTrue(
-                                monitorId
-                        );
+                        .countByMonitorIdAndSuccessTrue(monitorId);
 
-        // =====================================================
-        // FAILED CHECKS
-        // =====================================================
+        long failedChecks = totalChecks - successfulChecks;
 
-        long failedChecks =
-                totalChecks -
-                        successfulChecks;
-
-        // =====================================================
-        // UPTIME PERCENTAGE
-        // =====================================================
-
-        double uptimePercentage =
-                0.0;
+        double uptimePercentage = 0.0;
 
         if (totalChecks > 0) {
-
             uptimePercentage =
-                    ((double) successfulChecks
-                            / totalChecks)
-                            * 100.0;
+                    ((double) successfulChecks / totalChecks) * 100.0;
         }
-
-        // =====================================================
-        // GET ALL CHECKS
-        // =====================================================
 
         List<MonitorCheck> checks =
                 monitorCheckRepository
-                        .findByMonitorIdOrderByCheckedAtDesc(
-                                monitorId
-                        );
+                        .findByMonitorIdOrderByCheckedAtDesc(monitorId);
 
-        // =====================================================
-        // RESPONSE TIME
-        // =====================================================
-
-        double averageResponseTimeMs =
-                0.0;
-
-        Long lastResponseTimeMs =
-                null;
+        double averageResponseTimeMs = 0.0;
+        Long lastResponseTimeMs = null;
 
         if (!checks.isEmpty()) {
 
-            // -------------------------------------------------
-            // LATEST CHECK
-            // -------------------------------------------------
+            MonitorCheck latestCheck = checks.get(0);
+            lastResponseTimeMs = latestCheck.getResponseTimeMs();
 
-            MonitorCheck latestCheck =
-                    checks.get(0);
-
-            lastResponseTimeMs =
-                    latestCheck.getResponseTimeMs();
-
-            // -------------------------------------------------
-            // CALCULATE AVERAGE
-            // -------------------------------------------------
-
-            long totalResponseTime =
-                    0;
-
-            long responseTimeCount =
-                    0;
+            long totalResponseTime = 0;
+            long responseTimeCount = 0;
 
             for (MonitorCheck check : checks) {
-
-                if (check.getResponseTimeMs()
-                        != null) {
-
-                    totalResponseTime +=
-                            check.getResponseTimeMs();
-
+                if (check.getResponseTimeMs() != null) {
+                    totalResponseTime += check.getResponseTimeMs();
                     responseTimeCount++;
                 }
             }
 
             if (responseTimeCount > 0) {
-
                 averageResponseTimeMs =
-                        (double)
-                                totalResponseTime
-                                / responseTimeCount;
+                        (double) totalResponseTime / responseTimeCount;
             }
         }
 
-        // =====================================================
-        // CURRENT STATUS
-        // =====================================================
+        String status = monitor.getCurrentStatus();
 
-        String status =
-                "NO_DATA";
-
-        if (!checks.isEmpty()) {
-
-            MonitorCheck latestCheck =
-                    checks.get(0);
-
-            if (Boolean.TRUE.equals(
-                    latestCheck.getSuccess())) {
-
-                status = "UP";
-
-            } else {
-
-                status = "DOWN";
-            }
+        if (status == null || status.isBlank()) {
+            status = "NO_DATA";
         }
-
-        // =====================================================
-        // RETURN STATISTICS
-        // =====================================================
 
         return new MonitorStatsResponse(
                 monitorId,
@@ -439,158 +302,74 @@ public class MonitoringService {
                 failedChecks,
                 uptimePercentage,
                 averageResponseTimeMs,
-                lastResponseTimeMs
-        );
+                lastResponseTimeMs);
     }
 
     // =========================================================
     // GET LAST 24 HOURS STATISTICS
     // =========================================================
 
-    @Transactional(readOnly = true)
-    public MonitorStatsResponse getLast24HoursStats(
-            Monitor monitor) {
+    public MonitorStatsResponse getLast24HoursStats(Monitor monitor) {
 
-        Long monitorId =
-                monitor.getId();
+        Long monitorId = monitor.getId();
 
-        LocalDateTime end =
-                LocalDateTime.now();
-
-        LocalDateTime start =
-                end.minusHours(24);
-
-        // =====================================================
-        // GET CHECKS FROM LAST 24 HOURS
-        // =====================================================
+        LocalDateTime end = LocalDateTime.now();
+        LocalDateTime start = end.minusHours(24);
 
         List<MonitorCheck> checks =
                 monitorCheckRepository
                         .findByMonitorIdAndCheckedAtBetween(
-                                monitorId,
-                                start,
-                                end
-                        );
+                                monitorId, start, end);
 
-        // =====================================================
-        // TOTAL CHECKS
-        // =====================================================
+        long totalChecks = checks.size();
 
-        long totalChecks =
-                checks.size();
+        long successfulChecks = checks.stream()
+                .filter(check -> Boolean.TRUE.equals(check.getSuccess()))
+                .count();
 
-        // =====================================================
-        // SUCCESSFUL CHECKS
-        // =====================================================
+        long failedChecks = totalChecks - successfulChecks;
 
-        long successfulChecks =
-                checks.stream()
-                        .filter(check ->
-                                Boolean.TRUE.equals(
-                                        check.getSuccess()
-                                ))
-                        .count();
-
-        // =====================================================
-        // FAILED CHECKS
-        // =====================================================
-
-        long failedChecks =
-                totalChecks -
-                        successfulChecks;
-
-        // =====================================================
-        // UPTIME PERCENTAGE
-        // =====================================================
-
-        double uptimePercentage =
-                0.0;
+        double uptimePercentage = 0.0;
 
         if (totalChecks > 0) {
-
             uptimePercentage =
-                    ((double) successfulChecks
-                            / totalChecks)
-                            * 100.0;
+                    ((double) successfulChecks / totalChecks) * 100.0;
         }
 
-        // =====================================================
-        // RESPONSE TIME
-        // =====================================================
-
-        double averageResponseTimeMs =
-                0.0;
-
-        Long lastResponseTimeMs =
-                null;
+        double averageResponseTimeMs = 0.0;
+        Long lastResponseTimeMs = null;
 
         if (!checks.isEmpty()) {
 
-            // -------------------------------------------------
-            // FIND LATEST CHECK
-            // -------------------------------------------------
-
-            MonitorCheck latestCheck =
-                    checks.stream()
-                            .max(
-                                    Comparator.comparing(
-                                            MonitorCheck::getCheckedAt
-                                    )
-                            )
-                            .orElse(null);
+            MonitorCheck latestCheck = checks.stream()
+                    .max(Comparator.comparing(MonitorCheck::getCheckedAt))
+                    .orElse(null);
 
             if (latestCheck != null) {
-
-                lastResponseTimeMs =
-                        latestCheck.getResponseTimeMs();
+                lastResponseTimeMs = latestCheck.getResponseTimeMs();
             }
 
-            // -------------------------------------------------
-            // CALCULATE AVERAGE RESPONSE TIME
-            // -------------------------------------------------
-
-            long totalResponseTime =
-                    0;
-
-            long responseTimeCount =
-                    0;
+            long totalResponseTime = 0;
+            long responseTimeCount = 0;
 
             for (MonitorCheck check : checks) {
-
-                if (check.getResponseTimeMs()
-                        != null) {
-
-                    totalResponseTime +=
-                            check.getResponseTimeMs();
-
+                if (check.getResponseTimeMs() != null) {
+                    totalResponseTime += check.getResponseTimeMs();
                     responseTimeCount++;
                 }
             }
 
             if (responseTimeCount > 0) {
-
                 averageResponseTimeMs =
-                        (double)
-                                totalResponseTime
-                                / responseTimeCount;
+                        (double) totalResponseTime / responseTimeCount;
             }
         }
 
-        // =====================================================
-        // CURRENT STATUS
-        // =====================================================
-
-        String status =
-                monitor.getCurrentStatus();
+        String status = monitor.getCurrentStatus();
 
         if (status == null) {
-
             status = "NO_DATA";
         }
-
-        // =====================================================
-        // RETURN STATISTICS
-        // =====================================================
 
         return new MonitorStatsResponse(
                 monitorId,
@@ -601,169 +380,84 @@ public class MonitoringService {
                 failedChecks,
                 uptimePercentage,
                 averageResponseTimeMs,
-                lastResponseTimeMs
-        );
+                lastResponseTimeMs);
     }
+
     // =========================================================
-// GET LAST 7 DAYS STATISTICS
-// =========================================================
+    // GET LAST 7 DAYS STATISTICS
+    // =========================================================
 
-@Transactional(readOnly = true)
-public MonitorStatsResponse getLast7DaysStats(
-        Monitor monitor) {
+    public MonitorStatsResponse getLast7DaysStats(Monitor monitor) {
 
-    Long monitorId =
-            monitor.getId();
+        Long monitorId = monitor.getId();
 
-    LocalDateTime end =
-            LocalDateTime.now();
+        LocalDateTime end = LocalDateTime.now();
+        LocalDateTime start = end.minusDays(7);
 
-    LocalDateTime start =
-            end.minusDays(7);
+        List<MonitorCheck> checks =
+                monitorCheckRepository
+                        .findByMonitorIdAndCheckedAtBetween(
+                                monitorId, start, end);
 
-    // =====================================================
-    // GET CHECKS FROM LAST 7 DAYS
-    // =====================================================
+        long totalChecks = checks.size();
 
-    List<MonitorCheck> checks =
-            monitorCheckRepository
-                    .findByMonitorIdAndCheckedAtBetween(
-                            monitorId,
-                            start,
-                            end
-                    );
+        long successfulChecks = checks.stream()
+                .filter(check -> Boolean.TRUE.equals(check.getSuccess()))
+                .count();
 
-    // =====================================================
-    // TOTAL CHECKS
-    // =====================================================
+        long failedChecks = totalChecks - successfulChecks;
 
-    long totalChecks =
-            checks.size();
+        double uptimePercentage = 0.0;
 
-    // =====================================================
-    // SUCCESSFUL CHECKS
-    // =====================================================
-
-    long successfulChecks =
-            checks.stream()
-                    .filter(check ->
-                            Boolean.TRUE.equals(
-                                    check.getSuccess()
-                            ))
-                    .count();
-
-    // =====================================================
-    // FAILED CHECKS
-    // =====================================================
-
-    long failedChecks =
-            totalChecks -
-                    successfulChecks;
-
-    // =====================================================
-    // UPTIME PERCENTAGE
-    // =====================================================
-
-    double uptimePercentage =
-            0.0;
-
-    if (totalChecks > 0) {
-
-        uptimePercentage =
-                ((double) successfulChecks
-                        / totalChecks)
-                        * 100.0;
-    }
-
-    // =====================================================
-    // RESPONSE TIME
-    // =====================================================
-
-    double averageResponseTimeMs =
-            0.0;
-
-    Long lastResponseTimeMs =
-            null;
-
-    if (!checks.isEmpty()) {
-
-        // -------------------------------------------------
-        // FIND LATEST CHECK
-        // -------------------------------------------------
-
-        MonitorCheck latestCheck =
-                checks.stream()
-                        .max(
-                                Comparator.comparing(
-                                        MonitorCheck::getCheckedAt
-                                )
-                        )
-                        .orElse(null);
-
-        if (latestCheck != null) {
-
-            lastResponseTimeMs =
-                    latestCheck.getResponseTimeMs();
+        if (totalChecks > 0) {
+            uptimePercentage =
+                    ((double) successfulChecks / totalChecks) * 100.0;
         }
 
-        // -------------------------------------------------
-        // CALCULATE AVERAGE RESPONSE TIME
-        // -------------------------------------------------
+        double averageResponseTimeMs = 0.0;
+        Long lastResponseTimeMs = null;
 
-        long totalResponseTime =
-                0;
+        if (!checks.isEmpty()) {
 
-        long responseTimeCount =
-                0;
+            MonitorCheck latestCheck = checks.stream()
+                    .max(Comparator.comparing(MonitorCheck::getCheckedAt))
+                    .orElse(null);
 
-        for (MonitorCheck check : checks) {
+            if (latestCheck != null) {
+                lastResponseTimeMs = latestCheck.getResponseTimeMs();
+            }
 
-            if (check.getResponseTimeMs()
-                    != null) {
+            long totalResponseTime = 0;
+            long responseTimeCount = 0;
 
-                totalResponseTime +=
-                        check.getResponseTimeMs();
+            for (MonitorCheck check : checks) {
+                if (check.getResponseTimeMs() != null) {
+                    totalResponseTime += check.getResponseTimeMs();
+                    responseTimeCount++;
+                }
+            }
 
-                responseTimeCount++;
+            if (responseTimeCount > 0) {
+                averageResponseTimeMs =
+                        (double) totalResponseTime / responseTimeCount;
             }
         }
 
-        if (responseTimeCount > 0) {
+        String status = monitor.getCurrentStatus();
 
-            averageResponseTimeMs =
-                    (double)
-                            totalResponseTime
-                            / responseTimeCount;
+        if (status == null) {
+            status = "NO_DATA";
         }
+
+        return new MonitorStatsResponse(
+                monitorId,
+                monitor.getName(),
+                status,
+                totalChecks,
+                successfulChecks,
+                failedChecks,
+                uptimePercentage,
+                averageResponseTimeMs,
+                lastResponseTimeMs);
     }
-
-    // =====================================================
-    // CURRENT STATUS
-    // =====================================================
-
-    String status =
-            monitor.getCurrentStatus();
-
-    if (status == null) {
-
-        status = "NO_DATA";
-    }
-
-    // =====================================================
-    // RETURN STATISTICS
-    // =====================================================
-
-    return new MonitorStatsResponse(
-            monitorId,
-            monitor.getName(),
-            status,
-            totalChecks,
-            successfulChecks,
-            failedChecks,
-            uptimePercentage,
-            averageResponseTimeMs,
-            lastResponseTimeMs
-    );
-}
-
 }
