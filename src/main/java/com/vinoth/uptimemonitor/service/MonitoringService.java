@@ -193,11 +193,9 @@ public class MonitoringService {
 
             monitor.setConsecutiveFailures(consecutiveFailures + 1);
             monitor.setConsecutiveSuccesses(0);
-
-            if (monitor.getConsecutiveFailures() >= FAILURE_THRESHOLD) {
-                monitor.setCurrentStatus("DOWN");
+            monitor.setCurrentStatus("DOWN");
             }
-        }
+        
 
         // =====================================================
         // UPDATE LAST CHECKED TIME
